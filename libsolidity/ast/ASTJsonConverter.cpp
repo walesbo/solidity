@@ -315,13 +315,16 @@ bool ASTJsonConverter::visit(UsingForDirective const& _node)
 	vector<pair<string, Json::Value>> attributes = {
 		make_pair("typeName", _node.typeName() ? toJson(*_node.typeName()) : Json::nullValue)
 	};
+
 	if (_node.usesBraces())
 	{
 		Json::Value functionList;
-		for (auto const& function: _node.functionsOrLibrary())
+		for (auto&& [function, op]: _node.functionsAndOperators())
 		{
 			Json::Value functionNode;
 			functionNode["function"] = toJson(*function);
+			if (op)
+				functionNode["operator"] = string(TokenTraits::toString(*op));
 			functionList.append(move(functionNode));
 		}
 		attributes.emplace_back("functionList", move(functionList));

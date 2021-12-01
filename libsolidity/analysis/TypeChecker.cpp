@@ -1687,10 +1687,28 @@ void TypeChecker::endVisit(BinaryOperation const& _operation)
 {
 	Type const* leftType = type(_operation.leftExpression());
 	Type const* rightType = type(_operation.rightExpression());
-	TypeResult result = leftType->binaryOperatorResult(_operation.getOperator(), rightType);
-	Type const* commonType = result.get();
-	if (!commonType)
-	{
+	_operation.annotation().isLValue = false;
+	_operation.annotation().isConstant = false;
+
+	FunctionDefinition const* function = leftType->userDefinedOperator(_operation.getOperator(), *currentDefinitionScope());
+	_operation.annotation().userDefinedFunction = function;
+	FunctionType const* functionType = function ? dynamic_cast<FunctionType const*>(
+		function->libraryFunction() ? function->typeViaContractName() : function->type()
+	) : nullptr;
+	if (function)
+		solAssert(functionType);
+	_operation.annotation().isPure =
+		*_operation.leftExpression().annotation().isPure &&
+		*_operation.rightExpression().annotation().isPure &&
+		(!functionType || functionType->isPure());
+	TypeResult builtinResult = leftType->binaryOperatorResult(_operation.getOperator(), rightType);
+	Type const* commonType = leftType;
+
+	// Either the operator is user-defined or built-in.
+	// TODO this is wrong for comparisons, they might be defined on user-defined types.
+	solAssert(!function || !builtinResult);
+
+	if (!builtinResult && !function)
 		m_errorReporter.typeError(
 			2271_error,
 			_operation.location(),
@@ -1700,22 +1718,33 @@ void TypeChecker::endVisit(BinaryOperation const& _operation)
 			leftType->toString() +
 			" and " +
 			rightType->toString() +
-			(!result.message().empty() ? ". " + result.message() : "")
+			(!builtinResult.message().empty() ? ". " + builtinResult.message() : "")
 		);
-		commonType = leftType;
+
+	if (builtinResult)
+		commonType = builtinResult.get();
+	else if (function)
+	{
+		solAssert(
+			functionType->parameterTypes().size() == 2 &&
+			*functionType->parameterTypes().at(0) ==
+			*functionType->parameterTypes().at(1)
+		);
+		commonType = functionType->parameterTypes().at(0);
 	}
+
 	_operation.annotation().commonType = commonType;
 	_operation.annotation().type =
 		TokenTraits::isCompareOp(_operation.getOperator()) ?
 		TypeProvider::boolean() :
 		commonType;
-	_operation.annotation().isPure =
-		*_operation.leftExpression().annotation().isPure &&
-		*_operation.rightExpression().annotation().isPure;
-	_operation.annotation().isLValue = false;
-	_operation.annotation().isConstant = false;
 
-	if (_operation.getOperator() == Token::Exp || _operation.getOperator() == Token::SHL)
+	if (function)
+		solAssert(
+			functionType->returnParameterTypes().size() == 1 &&
+			*functionType->returnParameterTypes().front() == *_operation.annotation().type
+		);
+	else if (builtinResult && (_operation.getOperator() == Token::Exp || _operation.getOperator() == Token::SHL))
 	{
 		string operation = _operation.getOperator() == Token::Exp ? "exponentiation" : "shift";
 		if (
@@ -3678,7 +3707,7 @@ void TypeChecker::endVisit(UsingForDirective const& _usingFor)
 	}
 
 
-	for (ASTPointer<IdentifierPath> const& path: _usingFor.functionsOrLibrary())
+	for (auto const& [path, operator_]: _usingFor.functionsAndOperators())
 	{
 		solAssert(path->annotation().referencedDeclaration);
 		FunctionDefinition const& functionDefinition =
@@ -3714,6 +3743,72 @@ void TypeChecker::endVisit(UsingForDirective const& _usingFor)
 					": " +  result.message()
 				)
 			);
+		else if (operator_)
+		{
+			if (!_usingFor.typeName()->annotation().type->typeDefinition())
+			{
+				m_errorReporter.typeError(
+					5332_error,
+					path->location(),
+					"Operators can only be implemented for user-defined types and not for contracts."
+				);
+				continue;
+			}
+			bool isUnaryNegation = (
+				operator_ == Token::Sub &&
+				functionType->parameterTypesIncludingSelf().size() == 1
+			);
+			if (
+				(
+					(TokenTraits::isBinaryOp(*operator_) && !isUnaryNegation) ||
+					TokenTraits::isCompareOp(*operator_)
+				) &&
+				(
+					functionType->parameterTypesIncludingSelf().size() != 2 ||
+					*functionType->parameterTypesIncludingSelf().at(0) !=
+					*functionType->parameterTypesIncludingSelf().at(1)
+				)
+			)
+				m_errorReporter.typeError(
+					1884_error,
+					path->location(),
+					"The function \"" + joinHumanReadable(path->path(), ".") + "\" "+
+					"needs to have two parameters of equal type to be used for the operator " +
+					TokenTraits::friendlyName(*operator_) +
+					"."
+				);
+			if (
+				(isUnaryNegation || TokenTraits::isUnaryOp(*operator_)) &&
+				functionType->parameterTypesIncludingSelf().size() != 1
+			)
+				m_errorReporter.typeError(
+					8112_error,
+					path->location(),
+					"The function \"" + joinHumanReadable(path->path(), ".") + "\" "+
+					"needs to have exactly one parameter to be used for the operator " +
+					TokenTraits::friendlyName(*operator_) +
+					"."
+				);
+			Type const* expectedType =
+				TokenTraits::isCompareOp(*operator_) ?
+				dynamic_cast<Type const*>(TypeProvider::boolean()) :
+				functionType->parameterTypesIncludingSelf().at(0);
+
+			if (
+				functionType->returnParameterTypes().size() != 1 ||
+				*functionType->returnParameterTypes().front() != *expectedType
+			)
+				m_errorReporter.typeError(
+					7743_error,
+					path->location(),
+					"The function \"" + joinHumanReadable(path->path(), ".") + "\" "+
+					"needs to return exactly one value of type " +
+					expectedType->toString(true) +
+					" to be used for the operator " +
+					TokenTraits::friendlyName(*operator_) +
+					"."
+				);
+		}
 	}
 }
 

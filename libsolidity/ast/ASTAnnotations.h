@@ -314,6 +314,7 @@ struct BinaryOperationAnnotation: ExpressionAnnotation
 	/// The common type that is used for the operation, not necessarily the result type (which
 	/// e.g. for comparisons is bool).
 	Type const* commonType = nullptr;
+	FunctionDefinition const* userDefinedFunction = nullptr;
 };
 
 enum class FunctionCallKind
