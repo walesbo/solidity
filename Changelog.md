@@ -4,6 +4,7 @@ Language Features:
 
 
 Compiler Features:
+ * Yul Optimizer: Improve inlining heuristics for via IR code generation and pure Yul compilation.
 
 
 Bugfixes:
