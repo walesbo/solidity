@@ -18,6 +18,7 @@
 #include <libyul/optimiser/StructuralSimplifier.h>
 #include <libyul/AST.h>
 #include <libyul/Utilities.h>
+#include <libyul/backends/evm/EVMDialect.h>
 #include <libsolutil/CommonData.h>
 #include <libsolutil/Visitor.h>
 
@@ -57,9 +58,9 @@ OptionalStatements replaceConstArgSwitch(Switch& _switchStmt, u256 const& _const
 
 }
 
-void StructuralSimplifier::run(OptimiserStepContext&, Block& _ast)
+void StructuralSimplifier::run(OptimiserStepContext& _context, Block& _ast)
 {
-	StructuralSimplifier{}(_ast);
+	StructuralSimplifier{_context}(_ast);
 }
 
 void StructuralSimplifier::operator()(Block& _block)
@@ -86,6 +87,44 @@ void StructuralSimplifier::simplify(std::vector<yul::Statement>& _statements)
 		[&](ForLoop& _forLoop) -> OptionalStatements {
 			if (expressionAlwaysFalse(*_forLoop.condition))
 				return {std::move(_forLoop.pre.statements)};
+			return {};
+		},
+		[&](ExpressionStatement& _stmt) -> OptionalStatements {
+			FunctionCall& functionCall = get<FunctionCall>(_stmt.expression);
+			if (dynamic_cast<EVMDialect const*>(&m_dialect))
+				if (
+					functionCall.functionName.name == "revert"_yulstring ||
+					functionCall.functionName.name == "return"_yulstring
+				)
+				{
+					yulAssert(functionCall.arguments.size() == 2);
+					if (auto sizeLiteral = hasLiteralValue(functionCall.arguments.back()))
+						if (*sizeLiteral == 0)
+							if (
+								auto offsetLiteral = hasLiteralValue(functionCall.arguments.front());
+								!offsetLiteral || *offsetLiteral != 0
+							)
+							{
+								auto debugData = debugDataOf(functionCall.arguments.front());
+								vector<Statement> result;
+								result.emplace_back(ExpressionStatement{
+										debugData,
+										FunctionCall{
+											debugData,
+											Identifier{debugData, "pop"_yulstring},
+											{move(functionCall.arguments.front())}
+										}
+								});
+								functionCall.arguments.front() = Expression{Literal{
+									debugData,
+									LiteralKind::Number,
+									"0"_yulstring,
+									{}
+								}};
+								result.emplace_back(move(_stmt));
+								return result;
+							}
+				}
 			return {};
 		}
 	};

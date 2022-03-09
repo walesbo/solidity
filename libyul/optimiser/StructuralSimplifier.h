@@ -42,17 +42,18 @@ class StructuralSimplifier: public ASTModifier
 {
 public:
 	static constexpr char const* name{"StructuralSimplifier"};
-	static void run(OptimiserStepContext&, Block& _ast);
+	static void run(OptimiserStepContext& _context, Block& _ast);
 
 	using ASTModifier::operator();
 	void operator()(Block& _block) override;
 private:
-	StructuralSimplifier() = default;
+	StructuralSimplifier(OptimiserStepContext& _context): m_dialect(_context.dialect) {}
 
 	void simplify(std::vector<Statement>& _statements);
 	bool expressionAlwaysTrue(Expression const& _expression);
 	bool expressionAlwaysFalse(Expression const& _expression);
 	std::optional<u256> hasLiteralValue(Expression const& _expression) const;
+	Dialect const& m_dialect;
 };
 
 }
