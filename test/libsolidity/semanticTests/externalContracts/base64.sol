@@ -34,7 +34,7 @@ contract test {
 // compileViaYul: also
 // ----
 // constructor()
-// gas irOptimized: 450044
+// gas irOptimized: 449852
 // gas legacy: 766936
 // gas legacyOptimized: 543094
 // encode_inline_asm(bytes): 0x20, 0 -> 0x20, 0
@@ -52,10 +52,10 @@ contract test {
 // encode_no_asm(bytes): 0x20, 5, "fooba" -> 0x20, 8, "Zm9vYmE="
 // encode_no_asm(bytes): 0x20, 6, "foobar" -> 0x20, 8, "Zm9vYmFy"
 // encode_inline_asm_large()
-// gas irOptimized: 1385047
+// gas irOptimized: 1385044
 // gas legacy: 1658033
 // gas legacyOptimized: 1210033
 // encode_no_asm_large()
-// gas irOptimized: 3335101
+// gas irOptimized: 3335107
 // gas legacy: 4801077
 // gas legacyOptimized: 2929077
