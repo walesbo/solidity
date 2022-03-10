@@ -20,6 +20,7 @@ class BadHeader(Exception):
     def __init__(self, msg: str):
         super().__init__("Bad header: " + msg)
 
+
 class JsonRpcProcess:
     exe_path: str
     exe_args: List[str]
@@ -118,12 +119,13 @@ SGR_STATUS_FAIL = '\033[1;31m'
 
 class ExpectationFailed(Exception):
     def __init__(self, actual, expected):
-        self.actual = actual
-        self.expected = expected
-        diff = DeepDiff(actual, expected)
+        self.actual = json.dumps(actual, sort_keys=True)
+        self.expected = json.dumps(expected, sort_keys=True)
+        diff = json.dumps(DeepDiff(actual, expected), indent=4)
         super().__init__(
-            f"Expectation failed.\n\tExpected {expected}\n\tbut got {actual}.\n\t{diff}"
+            f"\n\tExpected {self.expected}\n\tbut got {self.actual}.\n\t{diff}"
         )
+
 
 def create_cli_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Solidity LSP Test suite")
@@ -170,13 +172,16 @@ class Counter:
     passed: int = 0
     failed: int = 0
 
+
 class Marker(Enum):
     SimpleRange = auto()
     MultilineRange = auto()
 
+
 def extendEnd(marker, amount=1):
     marker["end"]["character"] += amount
     return marker
+
 
 class SolidityLSPTestSuite: # {{{
     test_counter = Counter()
@@ -221,9 +226,8 @@ class SolidityLSPTestSuite: # {{{
                 with JsonRpcProcess(self.solc_path, ["--lsp"], trace_io=self.trace_io) as solc:
                     test_fn(solc)
                     self.test_counter.passed += 1
-            except ExpectationFailed as e:
+            except ExpectationFailed:
                 self.test_counter.failed += 1
-                print(e)
                 print(traceback.format_exc())
             except Exception as e: # pragma pylint: disable=broad-except
                 self.test_counter.failed += 1
