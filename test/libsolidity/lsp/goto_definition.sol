@@ -2,6 +2,7 @@
 pragma solidity >=0.8.0;
 
 import "./lib.sol";
+//      ^ @importDirective
 
 interface I
 {
@@ -66,3 +67,25 @@ contract C
         result = c.red;
     }
 }
+// ----
+// -> textDocument/definition {
+//     "position": @importDirective
+// }
+// <- {
+//     "jsonrpc": "2.0",
+//     "result": [
+//         {
+//             "range": {
+//                 "end": {
+//                     "character": 0,
+//                     "line": 0
+//                 },
+//                 "start": {
+//                     "character": 0,
+//                     "line": 0
+//                 }
+//             },
+//             "uri": "lib.sol"
+//         }
+//     ]
+// }
