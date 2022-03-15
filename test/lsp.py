@@ -29,6 +29,7 @@ def preceedComments(sequence):
         result = result + "// " + line
     return result
 
+
 # {{{ JsonRpcProcess
 class BadHeader(Exception):
     def __init__(self, msg: str):
@@ -192,12 +193,24 @@ class Regexes(Enum):
     MultilineRange = auto()
 
     SendMessage = auto()
-    FindTag = auto()
+    FindQuotedTag = auto()
     Diagnostic = auto()
 
 def extendEnd(marker, amount=1):
     marker["end"]["character"] += amount
     return marker
+
+class ReplacingTag:
+    def __init__(self, tagName, tagRange):
+        self.tagName = tagName
+        self.tagRange = tagRange
+
+def encode_tags(z):
+    print("default!: " + str(z))
+    if isinstance(z, ReplacingTag):
+        return tagName
+    raise TypeError(f'Object of type {o.__class__.__name__} '
+                    f'is not JSON serializable')
 
 
 class SolidityLSPTestSuite: # {{{
@@ -225,7 +238,7 @@ class SolidityLSPTestSuite: # {{{
 
         self.test_definition_regexes = {
             Regexes.SendMessage: re.compile(R'^// -> (?P<message>[\w\/]+) {'),
-            Regexes.FindTag: re.compile(R"(P<tag>@\w+\+?)")
+            Regexes.FindQuotedTag: re.compile(R'(?P<tag>"@\w+")')
         }
 
         print(f"{SGR_NOTICE}test pattern: {self.test_pattern}{SGR_RESET}")
@@ -455,6 +468,21 @@ class SolidityLSPTestSuite: # {{{
         message = "Goto definition (" + description + ")"
         self.expect_equal(len(response['result']), 1, message)
         self.expect_location(response['result'][0], expected_uri, expected_lineNo, expected_startEndColumns)
+
+    def replace_ranges_with_tags(self, content, markers):
+        # Replace matching ranges with "@<tagname>"
+        for tag, tagRange in markers.items():
+            for result in content["result"]:
+                if "range" in result:
+                    if tagRange == result["range"]:
+                        result["range"] = str(tag)
+
+        # Convert JSON to string and split it at the quoted tags
+        splitted = self.test_definition_regexes[Regexes.FindQuotedTag].split(json.dumps(content, indent=4, sort_keys=True))
+
+        # remove the quotes and return result
+        return "".join(map(lambda p: p[1:-1] if p.startswith('"@') else p, splitted))
+
     # }}}
 
     # {{{ actual tests
@@ -667,8 +695,6 @@ class SolidityLSPTestSuite: # {{{
 
                     body = body + line[3:] + "\n"
                 else:
-                    print("searching for end of expectedResponse")
-                    print(line)
                     expectedResponse = expectedResponse + line[3:] + "\n"
                     if line == "// }":
                         expectedResponseIdx = (expectedResponseIdx[0], idx + len(line))
@@ -684,11 +710,12 @@ class SolidityLSPTestSuite: # {{{
                         if 'position' in messageBody:
                             if 'start' in messageBody['position']:
                                 messageBody['position'] = messageBody['position']['start']
-                        print(message + " : " +  json.dumps(messageBody))
                         responseBody = solc.call_method(message, messageBody)
 
                         for result in responseBody["result"]:
                             result["uri"] = result["uri"].replace(self.project_root_uri + "/", "")
+
+                        # TODO URI dependent markers
 
                         expectedResponseJson = json.loads(expectedResponse)
 
@@ -702,15 +729,15 @@ class SolidityLSPTestSuite: # {{{
                             userResponse = sys.stdin.read(1)
                             if userResponse == "u":
                                 content = content[:expectedResponseIdx[0]] + \
-                                    preceedComments("<- " + json.dumps(responseBody, indent=4, sort_keys=True)) + \
+                                    preceedComments("<- " + \
+                                        self.replace_ranges_with_tags(responseBody, markers)) + \
                                     content[expectedResponseIdx[1]:]
                                 print(content)
                                 with open(self.get_test_file_path(test), mode="w", encoding="utf-8", newline='') as f:
                                     f.write(content)
 
 
-
-                        print(responseBody)
+                        message = body = expectedResponse = ""
 
             else:
                 break
@@ -988,50 +1015,6 @@ class SolidityLSPTestSuite: # {{{
         self.expect_equal(len(published_diagnostics[0]['diagnostics']), 0)
         self.expect_equal(len(published_diagnostics[1]['diagnostics']), 1)
         self.expect_diagnostic(published_diagnostics[1]['diagnostics'][0], 2072, 33, (8, 19)) # unused variable in lib.sol
-
-        # import directive
-        self.expect_goto_definition_location(
-            solc=solc,
-            document_uri=FILE_URI,
-            document_position=(3, 9), # symbol `"./lib.sol"` in `import "./lib.sol"`
-            expected_uri=LIB_URI,
-            expected_lineNo=0,
-            expected_startEndColumns=(0, 0),
-            description="import directive"
-        )
-
-        # type symbol to jump to type defs (error, contract, enum, ...)
-        self.expect_goto_definition_location(
-            solc=solc,
-            document_uri=FILE_URI,
-            document_position=(30, 19), # symbol `IA` in `new IA()`
-            expected_uri=FILE_URI,
-            expected_lineNo=10,
-            expected_startEndColumns=(9, 11),
-            description="type symbol to jump to definition"
-        )
-
-        # virtual function lookup?
-        self.expect_goto_definition_location(
-            solc=solc,
-            document_uri=FILE_URI,
-            document_position=(31, 12), # symbol `f`, jumps to interface definition
-            expected_uri=FILE_URI,
-            expected_lineNo=7,
-            expected_startEndColumns=(13, 14),
-            description="virtual function lookup"
-        )
-
-        # using for
-        self.expect_goto_definition_location(
-            solc=solc,
-            document_uri=FILE_URI,
-            document_position=(37, 10), # symbol `add` in `i.add(5)`
-            expected_uri=FILE_URI,
-            expected_lineNo=22,
-            expected_startEndColumns=(13, 16),
-            description="using for"
-        )
 
         # library
         self.expect_goto_definition_location(
