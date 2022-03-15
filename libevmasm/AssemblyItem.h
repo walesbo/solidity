@@ -105,6 +105,7 @@ public:
 	AssemblyItemType type() const { return m_type; }
 	u256 const& data() const { assertThrow(m_type != Operation, util::Exception, ""); return *m_data; }
 	void setData(u256 const& _data) { assertThrow(m_type != Operation, util::Exception, ""); m_data = std::make_shared<u256>(_data); }
+	std::pair<std::string, std::string> nameAndData() const;
 
 	bytes const& verbatimData() const { assertThrow(m_type == VerbatimBytecode, util::Exception, ""); return std::get<2>(*m_verbatimBytecode); }
 
@@ -179,6 +180,7 @@ public:
 	void setImmutableOccurrences(size_t _n) const { m_immutableOccurrences = _n; }
 
 private:
+	static std::string toStringInHex(u256 _value);
 	size_t opcodeCount() const noexcept;
 
 	AssemblyItemType m_type;
