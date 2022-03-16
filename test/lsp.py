@@ -60,10 +60,7 @@ class JsonRpcProcess:
                 # server quit
                 return None
             line = line.decode("utf-8")
-            if not line.endswith("\r\n"):
-                raise BadHeader("missing newline")
-            # remove the "\r\n"
-            line = line[:-2]
+            line = line.rstrip() # remove the "\r\n"
             if line == '':
                 break # done with the headers
             if line.startswith(CONTENT_LENGTH_HEADER):
