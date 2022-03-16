@@ -42,7 +42,16 @@ string FileRepository::sourceUnitNameToClientPath(string const& _sourceUnitName)
 	else if (_sourceUnitName.find("file://") == 0)
 		return _sourceUnitName;
 	else
-		return "file://" + (m_fileReader.basePath() / _sourceUnitName).generic_string();
+	{
+		auto basePath = m_fileReader.basePath();
+#if defined(_WIN32)
+		// Ensure basePath does contain Windows drive letter to fully qualify the path.
+		if (!basePath.has_root_name())
+			basePath = (boost::filesystem::current_path().root_path() / basePath).normalize();
+#endif
+		auto const clientPath = basePath / _sourceUnitName;
+		return "file://" + clientPath.generic_string();
+	}
 }
 
 string FileRepository::clientPathToSourceUnitName(string const& _path) const
