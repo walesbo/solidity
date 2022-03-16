@@ -177,6 +177,10 @@ class SolidityLSPTestSuite: # {{{
         args = create_cli_parser().parse_args()
         self.solc_path = args.solc_path
         self.project_root_dir = os.path.realpath(args.project_root_dir) + "/test/libsolidity/lsp"
+        if os.name == 'nt':
+            # URIs path delimiter is forward slash but Windows path separator still defaults to backward slash,
+            # so we force the translation here on Windows-platform to not break the tests.
+            self.project_root_dir = self.project_root_dir.replace('\\', '/')
         self.project_root_uri = "file://" + self.project_root_dir
         self.print_assertions = args.print_assertions
         self.trace_io = args.trace_io
