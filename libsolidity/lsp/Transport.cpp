@@ -107,8 +107,15 @@ void IOStreamTransport::send(Json::Value _json, MessageID _id)
 
 	string const jsonString = solidity::util::jsonCompactPrint(_json);
 
-	m_output << "Content-Length: " << jsonString.size() << "\r\n";
-	m_output << "\r\n";
+#if defined(_WIN32)
+	m_output << "Content-Length: " << jsonString.size();
+	// The LSP spec explicitly states that the transport encodes newlines for headers and
+	// the delimiter between headers and content as CRLF.
+	// We assume that the output stream is opened in text mode.
+	m_output << "\n\n";
+#else
+	m_output << "\r\n\r\n";
+#endif
 	m_output << jsonString;
 
 	m_output.flush();
