@@ -1,22 +1,47 @@
 #!/usr/bin/env python3
 
 from argparse import ArgumentParser
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from textwrap import dedent
-from typing import Any, List, Optional, Union
+from typing import Any, Dict, List, Optional, Set, Union
 import json
 import sys
+
+
+class DiffMode(Enum):
+    IN_PLACE = 'inplace'
+    TABLE = 'table'
 
 
 class DifferenceStyle(Enum):
     ABSOLUTE = 'absolute'
     RELATIVE = 'relative'
-    HUMAN_READABLE = 'human-readable'
+    HUMANIZED = 'humanized'
+
 
 class OutputFormat(Enum):
     JSON = 'json'
+    CONSOLE = 'console'
     MARKDOWN = 'markdown'
+
+
+DEFAULT_RELATIVE_PRECISION = 4
+
+DEFAULT_DIFFERENCE_STYLE = {
+    DiffMode.IN_PLACE: DifferenceStyle.ABSOLUTE,
+    DiffMode.TABLE: DifferenceStyle.HUMANIZED,
+}
+assert all(t in DiffMode for t in DEFAULT_DIFFERENCE_STYLE)
+assert all(d in DifferenceStyle for d in DEFAULT_DIFFERENCE_STYLE.values())
+
+DEFAULT_OUTPUT_FOMAT = {
+    DiffMode.IN_PLACE: OutputFormat.JSON,
+    DiffMode.TABLE: OutputFormat.CONSOLE,
+}
+assert all(m in DiffMode for m in DEFAULT_OUTPUT_FOMAT)
+assert all(o in OutputFormat for o in DEFAULT_OUTPUT_FOMAT.values())
 
 
 class ValidationError(Exception):
@@ -28,19 +53,15 @@ class CommandLineError(ValidationError):
 
 
 class BenchmarkDiffer:
-    DEFAULT_RELATIVE_PRECISION = 4
-    DEFAULT_DIFFERENCE_STYLE = DifferenceStyle.HUMAN_READABLE
-    DEFAULT_OUTPUT_FOMAT = OutputFormat.MARKDOWN
-
     difference_style: DifferenceStyle
     relative_precision: Optional[int]
     output_format: OutputFormat
 
     def __init__(
         self,
-        difference_style: DifferenceStyle = DEFAULT_DIFFERENCE_STYLE,
-        relative_precision: Optional[int] = DEFAULT_RELATIVE_PRECISION,
-        output_format: Optional[int] = DEFAULT_OUTPUT_FOMAT,
+        difference_style: DifferenceStyle,
+        relative_precision: Optional[int],
+        output_format: Optional[int],
     ):
         self.difference_style = difference_style
         self.relative_precision = relative_precision
@@ -74,7 +95,7 @@ class BenchmarkDiffer:
             return self._humanize_diff('!T')
 
         number_diff = self._diff_numbers(before, after)
-        if self.difference_style != DifferenceStyle.HUMAN_READABLE:
+        if self.difference_style != DifferenceStyle.HUMANIZED:
             return number_diff
 
         return self._humanize_diff(number_diff)
@@ -114,7 +135,7 @@ class BenchmarkDiffer:
         def wrap(value, symbol):
             return f"{symbol}{value}{symbol}"
 
-        markdown = self.output_format == OutputFormat.MARKDOWN
+        markdown = (self.output_format == OutputFormat.MARKDOWN)
 
         if isinstance(diff, str) and diff.startswith('!'):
             return wrap(diff, '`' if markdown else '')
@@ -131,10 +152,12 @@ class BenchmarkDiffer:
             prefix = ''
             if diff < 0:
                 prefix = ''
-                suffix += ' ✅'
+                if markdown:
+                    suffix += ' ✅'
             elif diff > 0:
                 prefix = '+'
-                suffix += ' ❌'
+                if markdown:
+                    suffix += ' ❌'
             important = (diff != 0)
         else:
             value = diff
@@ -151,52 +174,59 @@ class BenchmarkDiffer:
         )
 
 
-class MarkdownDiffFormatter:
-    LEGEND = dedent("""
-        `!V` = version mismatch
-        `!B` = no value in the "before" version
-        `!A` = no value in the "after" version
-        `!T` = one or both values were not numeric and could not be compared
-        `-0` = very small negative value rounded to zero
-        `+0` = very small positive value rounded to zero
-    """)
+@dataclass(frozen=True)
+class DiffTable:
+    columns: Dict[str, List[Union[int, float, str]]]
 
-    @classmethod
-    def run(cls, diff: dict):
-        sorted_preset_names = sorted(cls._find_all_preset_names(diff))
-        sorted_attribute_names = sorted(cls._find_all_attribute_names(diff))
-        sorted_project_names = sorted(project for project in diff)
 
-        project_column_width = max(len(project) for project in diff)
+class DiffTableSet:
+    table_headers: List[str]
+    row_headers: List[str]
+    column_headers: List[str]
 
-        output = ''
-        for preset in sorted_preset_names:
-            column_widths = [project_column_width] + [
+    # Cells is a nested dict rather than a 3D array so that conversion to JSON is straightforward
+    cells: Dict[str, Dict[str, Dict[str, Union[int, float, str]]]] # preset -> project -> attribute
+
+    def __init__(self, diff: dict):
+        self.table_headers = sorted(self._find_all_preset_names(diff))
+        self.column_headers = sorted(self._find_all_attribute_names(diff))
+        self.row_headers = sorted(project for project in diff)
+
+        # All dimensions must have unique values
+        assert len(self.table_headers) == len(set(self.table_headers))
+        assert len(self.column_headers) == len(set(self.column_headers))
+        assert len(self.row_headers) == len(set(self.row_headers))
+
+        self.cells = {
+            preset: {
+                project: {
+                    attribute: self._cell_content(diff, project, preset, attribute)
+                    for attribute in self.column_headers
+                }
+                for project in self.row_headers
+            }
+            for preset in self.table_headers
+        }
+
+    def calculate_row_column_width(self) -> int:
+        return max(len(h) for h in self.row_headers)
+
+    def calculate_column_widths(self, table_header: str) -> List[int]:
+        assert table_header in self.table_headers
+
+        return [
+            max(
+                len(column_header),
                 max(
-                    len(attribute),
-                    max(
-                        len(cls._cell_content(diff, project, preset, attribute))
-                        for project in sorted_project_names
-                    )
+                    len(str(self.cells[table_header][row_header][column_header]))
+                    for row_header in self.row_headers
                 )
-                for attribute in sorted_attribute_names
-            ]
-            output += f'\n### `{preset}`\n'
-            output += cls._format_data_row(['project'] + sorted_attribute_names, column_widths) + '\n'
-            output += cls._format_separator_row(column_widths) + '\n'
-
-            for project in sorted_project_names:
-                attribute_values = [
-                    cls._cell_content(diff, project, preset, attribute)
-                    for attribute in sorted_attribute_names
-                ]
-                output += cls._format_data_row([project] + attribute_values, column_widths) + '\n'
-
-        output += f'\n{cls.LEGEND}\n'
-        return output
+            )
+            for column_header in self.column_headers
+        ]
 
     @classmethod
-    def _find_all_preset_names(cls, diff: dict):
+    def _find_all_preset_names(cls, diff: dict) -> Set[str]:
         return {
             preset
             for project, project_diff in diff.items()
@@ -205,7 +235,7 @@ class MarkdownDiffFormatter:
         }
 
     @classmethod
-    def _find_all_attribute_names(cls, diff: dict):
+    def _find_all_attribute_names(cls, diff: dict) -> Set[str]:
         return {
             attribute
             for project, project_diff in diff.items()
@@ -216,7 +246,7 @@ class MarkdownDiffFormatter:
         }
 
     @classmethod
-    def _cell_content(cls, diff: dict, project: str, preset: str, attribute: str):
+    def _cell_content(cls, diff: dict, project: str, preset: str, attribute: str) -> str:
         assert project in diff
 
         if isinstance(diff[project], str):
@@ -230,76 +260,183 @@ class MarkdownDiffFormatter:
 
         return diff[project][preset][attribute]
 
-    @classmethod
-    def _format_separator_row(cls, widths: List[int]):
-        return '|:' + ':|-'.join('-' * width for width in widths) + ':|'
+
+class DiffTableFormatter:
+    LEGEND = dedent("""
+        `!V` = version mismatch
+        `!B` = no value in the "before" version
+        `!A` = no value in the "after" version
+        `!T` = one or both values were not numeric and could not be compared
+        `-0` = very small negative value rounded to zero
+        `+0` = very small positive value rounded to zero
+    """)
 
     @classmethod
-    def _format_data_row(cls, cells: List[str], widths: List[int]):
+    def run(cls, diff_table_set: DiffTableSet, output_format: OutputFormat):
+        if output_format == OutputFormat.JSON:
+            return json.dumps(diff_table_set.cells, indent=4, sort_keys=True)
+        else:
+            assert output_format in {OutputFormat.CONSOLE, OutputFormat.MARKDOWN}
+
+            output = ''
+            for table_header in diff_table_set.table_headers:
+                column_widths = (
+                    [diff_table_set.calculate_row_column_width()] +
+                    diff_table_set.calculate_column_widths(table_header)
+                )
+
+                if output_format == OutputFormat.MARKDOWN:
+                    output += f'\n### `{table_header}`\n'
+                else:
+                    output += f'\n{table_header.upper()}\n'
+
+                if output_format == OutputFormat.CONSOLE:
+                    output += cls._format_separator_row(column_widths, output_format) + '\n'
+                output += cls._format_data_row(['project'] + diff_table_set.column_headers, column_widths) + '\n'
+                output += cls._format_separator_row(column_widths, output_format) + '\n'
+
+                for row_header in diff_table_set.row_headers:
+                    row = [
+                        diff_table_set.cells[table_header][row_header][column_header]
+                        for column_header in diff_table_set.column_headers
+                    ]
+                    output += cls._format_data_row([row_header] + row, column_widths) + '\n'
+
+                if output_format == OutputFormat.CONSOLE:
+                    output += cls._format_separator_row(column_widths, output_format) + '\n'
+
+            if output_format == OutputFormat.MARKDOWN:
+                output += f'\n{cls.LEGEND}\n'
+            return output
+
+    @classmethod
+    def _format_separator_row(cls, widths: List[int], output_format: OutputFormat):
+        assert output_format in {OutputFormat.CONSOLE, OutputFormat.MARKDOWN}
+
+        if output_format == OutputFormat.MARKDOWN:
+            return '|:' + ':|-'.join('-' * width for width in widths) + ':|'
+        else:
+            return '|-' + '-|-'.join('-' * width for width in widths) + '-|'
+
+    @classmethod
+    def _format_data_row(cls, cells: List[Union[int, float, str]], widths: List[int]):
         assert len(cells) == len(widths)
 
-        return '| ' + ' | '.join(cell.rjust(width) for cell, width in zip(cells, widths)) + ' |'
+        return '| ' + ' | '.join(str(cell).rjust(width) for cell, width in zip(cells, widths)) + ' |'
 
 
-def process_commandline() -> dict:
+@dataclass(frozen=True)
+class CommandLineOptions:
+    diff_mode: DiffMode
+    report_before: Path
+    report_after: Path
+    difference_style: DifferenceStyle
+    relative_precision: int
+    output_format: OutputFormat
+
+
+def process_commandline() -> CommandLineOptions:
     script_description = (
         "Compares summarized benchmark reports and outputs JSON with the same structure but listing only differences. "
         "Can also print the output as markdown table and format the values to make differences stand out more."
     )
 
     parser = ArgumentParser(description=script_description)
-    parser.add_argument(dest='report_before', help="Path to a JSON file containing benchmark results from before the change.")
-    parser.add_argument(dest='report_after', help="Path to a JSON file containing benchmark results from after the change.")
+    parser.add_argument(
+        dest='diff_mode',
+        choices=[m.value for m in DiffMode],
+        help=(
+            "Diff mode: "
+            f"'{DiffMode.IN_PLACE.value}' preserves input JSON structure and replace values with differences; "
+            f"'{DiffMode.TABLE.value}' creates a table assuming 3-level project/preset/attribute structure."
+        )
+    )
+    parser.add_argument(dest='report_before', help="Path to a JSON file containing original benchmark results.")
+    parser.add_argument(dest='report_after', help="Path to a JSON file containing new benchmark results.")
     parser.add_argument(
         '--style',
         dest='difference_style',
-        default=BenchmarkDiffer.DEFAULT_DIFFERENCE_STYLE.value,
         choices=[s.value for s in DifferenceStyle],
-        help="How to present numeric differences."
+        help=(
+            "How to present numeric differences: "
+            f"'{DifferenceStyle.ABSOLUTE.value}' subtracts new from original; "
+            f"'{DifferenceStyle.RELATIVE.value}' also divides by the original; "
+            f"'{DifferenceStyle.HUMANIZED.value}' is like relative but value is a percentage and "
+            "positive/negative changes are emphasized. "
+            f"(default: '{DifferenceStyle.ABSOLUTE.value}' in '{DiffMode.IN_PLACE.value}' mode, "
+            f"'{DifferenceStyle.HUMANIZED.value}' in '{DiffMode.TABLE.value}' mode)"
+        )
     )
     # NOTE: Negative values are valid for precision. round() handles them in a sensible way.
     parser.add_argument(
         '--precision',
         dest='relative_precision',
         type=int,
-        default=BenchmarkDiffer.DEFAULT_RELATIVE_PRECISION,
+        default=DEFAULT_RELATIVE_PRECISION,
         help=(
             "Number of significant digits for relative differences. "
-            f"Note that with --style={DifferenceStyle.HUMAN_READABLE.value} the rounding is applied "
+            f"Note that with --style={DifferenceStyle.HUMANIZED.value} the rounding is applied "
             "**before** converting the value to a percentage so you need to add 2. "
-            "Has no effect when used together with --style={DifferenceStyle.ABSOLUTE.value}."
+            f"Has no effect when used together with --style={DifferenceStyle.ABSOLUTE.value}. "
+            f"(default: {DEFAULT_RELATIVE_PRECISION})"
         )
     )
     parser.add_argument(
         '--output-format',
         dest='output_format',
         choices=[o.value for o in OutputFormat],
-        default=BenchmarkDiffer.DEFAULT_OUTPUT_FOMAT,
-        help="The format to use for the diff."
+        help=(
+            "The format to use for the diff: "
+            f"'{OutputFormat.JSON.value}' is raw JSON; "
+            f"'{OutputFormat.MARKDOWN.value}' is a markdown table with headers and a legend; "
+            f"'{OutputFormat.CONSOLE.value}' is similar to '{OutputFormat.MARKDOWN.value}' but with "
+            "adjustments to make it more readable when printed to the console. "
+            f"(default: '{OutputFormat.JSON.value}' in '{DiffMode.IN_PLACE.value}' mode, "
+            f"'{OutputFormat.CONSOLE.value}' in '{DiffMode.TABLE.value}' mode)"
+        )
     )
-    return parser.parse_args()
+
+    options = parser.parse_args()
+    processed_options = CommandLineOptions(
+        diff_mode=DiffMode(options.diff_mode),
+        report_before=Path(options.report_before),
+        report_after=Path(options.report_after),
+        difference_style=DifferenceStyle(options.difference_style)
+            if options.difference_style is not None
+            else DEFAULT_DIFFERENCE_STYLE[DiffMode(options.diff_mode)],
+        relative_precision=options.relative_precision,
+        output_format=OutputFormat(options.output_format)
+            if options.output_format is not None
+            else DEFAULT_OUTPUT_FOMAT[DiffMode(options.diff_mode)],
+    )
+
+    if processed_options.diff_mode == DiffMode.IN_PLACE and processed_options.output_format != OutputFormat.JSON:
+        raise CommandLineError(
+            f"Only the '{OutputFormat.JSON.value}' output format is supported in the '{DiffMode.IN_PLACE.value}' mode."
+        )
+
+    return processed_options
 
 
 def main():
-    options = process_commandline()
-    difference_style = DifferenceStyle(options.difference_style)
-    output_format = OutputFormat(options.output_format)
     try:
-        differ = BenchmarkDiffer(difference_style, options.relative_precision, output_format)
+        options = process_commandline()
+
+        differ = BenchmarkDiffer(options.difference_style, options.relative_precision, options.output_format)
         diff = differ.run(
-            json.loads(Path(options.report_before).read_text('utf-8')),
-            json.loads(Path(options.report_after).read_text('utf-8')),
+            json.loads(options.report_before.read_text('utf-8')),
+            json.loads(options.report_after.read_text('utf-8')),
         )
 
-        if output_format == OutputFormat.JSON:
-            print(json.dumps(diff, indent=4))
+        if options.diff_mode == DiffMode.IN_PLACE:
+            print(json.dumps(diff, indent=4, sort_keys=True))
         else:
-            assert output_format == OutputFormat.MARKDOWN
-            print(MarkdownDiffFormatter.run(diff))
+            assert options.diff_mode == DiffMode.TABLE
+            print(DiffTableFormatter.run(DiffTableSet(diff), options.output_format))
 
         return 0
     except CommandLineError as exception:
-        print(f"{exception}", file=sys.stderr)
+        print(f"ERROR: {exception}", file=sys.stderr)
         return 1
 
 if __name__ == "__main__":
